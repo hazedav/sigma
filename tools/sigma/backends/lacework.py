@@ -20,7 +20,6 @@ import sigma
 from .base import SingleTextQueryBackend
 from .mixins import MultiRuleOutputMixin
 
-
 class SplunkBackend(SingleTextQueryBackend):
     """Converts Sigma rule into Lacework Policy Platform."""
     identifier = "lacework"
@@ -43,34 +42,61 @@ class SplunkBackend(SingleTextQueryBackend):
         # TODO: determine if we're generating query/policy/both
         result = self.generate_query(sigmaparser)
 
+        result += self.generate_policy(sigmaparser)
+
         # TODO: figure out how sigmac writes to files vs. stdout
         return result
 
     def generate_query(self, sigmaparser):
         # TODO: use yaml
+        query_id = sigmaparser.parsedyaml.get("title").replace(" ", "_")
+        service = sigmaparser.parsedyaml['logsource']['service']
+        evaluator_id = ''
+        data_source = ''
+        if service == 'cloudtrail':
+            evaluator_id = 'Cloudtrail'
+            data_source = 'CloudTrailRawEvents'
+        detection = sigmaparser.parsedyaml.get("detection")
+        event_source = ''
+        event_name = ''
+        if detection.get("selection_source") or detection.get("selection"):
+            selection_source = detection.get("selection_source") or detection.get("selection")
+            event_source = 'EVENT_SOURCE = ' + selection_source.get("eventSource")
+            event_name = selection_source.get("eventName")
+            if type(event_name) == list:
+                event_name = ', '.join(f'"{name}"' for name in selection_source.get("eventName"))
+            else:
+                event_name = '"' + event_name + '"'
+        source = 'source {\n        ' + data_source + '\n    }\n    '
+        filter = 'filter {\n        ' + event_source + '\n        AND EVENT_NAME in (' + event_name + ')\n    }\n'
+        columns = '    return distinct {\n        INSERT_ID,\n        INSERT_TIME,\n        EVENT_TIME,\n        EVENT\n    }'
         return (
             '---\n'
-            'evaluatorId:\n'
-            'queryId:\n'
-            'queryText:\n'
+            'evaluatorId: ' + evaluator_id + '\n' +
+            'queryId: ' + query_id + '\n'
+            'queryText:\n' + query_id + ' {\n    ' + source + filter + columns + '\n}\n'
         )
 
     def generate_policy(self, sigmaparser):
         # TODO: use yaml
+        title = sigmaparser.parsedyaml.get("title")
+        query_id = sigmaparser.parsedyaml.get("title").replace(" ", "_")
+        severity = sigmaparser.parsedyaml.get("level")
+        description = sigmaparser.parsedyaml.get("description")
         return (
             '---\n'
             'policies:\n'
             '  - evaluatorId:\n'
             '    policyId:\n'
-            '    title:\n'
+            '    title: ' + title + '\n'
             '    enabled:\n'
             '    policyType:\n'
             '    alertEnabled:\n'
             '    alertProfile:\n'
             '    evalFrequency:\n'
-            '    queryId:\n'
-            '    limit:\n'
-            '    severity:\n'
-            '    description:\n'
+            '    queryId: ' + query_id + '\n'
+            '    limit: 1000\n'
+            '    severity: ' + severity + '\n'
+            '    description: ' + description + '\n'
             '    remediation:\n'
         )
