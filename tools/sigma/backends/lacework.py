@@ -59,16 +59,23 @@ class SplunkBackend(SingleTextQueryBackend):
         detection = sigmaparser.parsedyaml.get("detection")
         event_source = ''
         event_name = ''
+        filter_content = ''
         if detection.get("selection_source") or detection.get("selection"):
             selection_source = detection.get("selection_source") or detection.get("selection")
-            event_source = 'EVENT_SOURCE = ' + selection_source.get("eventSource")
+            event_source = 'EVENT_SOURCE = ' + selection_source.get("eventSource") + '\n'
+            filter_content = event_source
             event_name = selection_source.get("eventName")
             if type(event_name) == list:
                 event_name = ', '.join(f'"{name}"' for name in selection_source.get("eventName"))
             else:
                 event_name = '"' + event_name + '"'
+            filter_content += '        and EVENT_NAME in (' + event_name + ')\n'
+            if selection_source.get("requestParameters.attribute"):
+                filter_content += '        and EVENT:requestParameters.attribute = "' + selection_source['requestParameters.attribute'] + '"'
+            if selection_source.get("requestParameters.userData"):
+                filter_content += '        and EVENT:requestParameters.userData = "' + selection_source['requestParameters.userData'] + '"'
         source = 'source {\n        ' + data_source + '\n    }\n    '
-        filter = 'filter {\n        ' + event_source + '\n        AND EVENT_NAME in (' + event_name + ')\n    }\n'
+        filter = 'filter {\n        ' + filter_content + '\n    }\n'
         columns = '    return distinct {\n        INSERT_ID,\n        INSERT_TIME,\n        EVENT_TIME,\n        EVENT\n    }'
         return (
             '---\n'
