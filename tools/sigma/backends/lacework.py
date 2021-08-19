@@ -176,7 +176,7 @@ class LaceworkQuery:
             title = 'Unknown'
 
         # TODO: might need to replace additional non-word characters
-        query_id = f'Sigma_{title}'.replace(" ", "_")
+        query_id = f'Sigma_{title}'.replace(" ", "_").replace("/", "_Or_")
 
         return title, query_id
 
@@ -244,7 +244,7 @@ class LaceworkQuery:
             '    }}'
         )
         return return_block_template.format(
-            returns='\n'.join(f'        {r}' for r in self.returns)
+            returns=',\n'.join(f'        {r}' for r in self.returns)
         )
 
     def __iter__(self):
