@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import json
 import re
 import textwrap
 import yaml
@@ -74,6 +75,17 @@ def safe_get(obj, name, inst):
     return value
 
 
+def get_output_format(config):
+    return (
+        'json'
+        if (
+            safe_get(config, 'json', bool)
+            or safe_get(config, 'JSON', bool)
+        )
+        else 'yaml'
+    )
+
+
 # YAML Tools
 def str_presenter(dumper, data):
     if len(data.splitlines()) > 1:  # check for multiline string
@@ -85,7 +97,9 @@ yaml.add_representer(str, str_presenter)
 
 
 class LaceworkBackend(SingleTextQueryBackend):
-    """Converts Sigma rule into Lacework Policy Platform."""
+    """
+    Converts Sigma rule into Lacework Policy Platform
+    """
     identifier = "lacework"
     active = True
     # our approach to config will be such that we support both an
@@ -109,29 +123,73 @@ class LaceworkBackend(SingleTextQueryBackend):
         """
         Method is called for each sigma rule and receives the parsed rule (SigmaParser)
         """
-        # TODO: get config if specified
+        # 1. get embedded config global
+        config = LACEWORK_CONFIG
+
+        # 2. overlay backend options
+        config.update(self.backend_options)
+
+        # 3. set a class instance variable for sigma fields
+        self.laceworkSigmaFields = LaceworkQuery.get_fields(sigmaparser)
+
+        # 4. set a class instance variable for lacework field mapping
         self.laceworkFieldMap = LaceworkQuery.get_field_map(LACEWORK_CONFIG, sigmaparser)
 
-        # via backend options...
+        # 5. get output format
+        output_format = get_output_format(config)
+
         # determine if we're generating query/policy/both
         result = ''
-        if LaceworkQuery.should_generate_query(self.backend_options):
-            query = LaceworkQuery(LACEWORK_CONFIG, sigmaparser, self)
+        if LaceworkQuery.should_generate_query(config):
+            query = LaceworkQuery(
+                config, sigmaparser, self, output_format=output_format)
             result += str(query)
-        if LaceworkPolicy.should_generate_policy(self.backend_options):
-            policy = LaceworkPolicy(LACEWORK_CONFIG, sigmaparser)
+        if LaceworkPolicy.should_generate_policy(config):
+            policy = LaceworkPolicy(
+                config, sigmaparser, output_format=output_format)
+
+            # if we're in json mode and have already generated a query
+            # add a newline before emitting policy
+            if result and output_format == 'json':
+                result += '\n'
+
             result += str(policy)
 
         return result
 
     def generateNOTNode(self, node):
+        """
+        NOT Expression for Lacework Query Language (LQL)
+
+        1. Prepend expression with NOT
+        2. Wrap expression in parenthesis
+        """
         generated = self.generateNode(node.item)
         if generated is not None:
             return f'{self.notToken}({generated})'
         else:
             return None
 
+    def generateValueNode(self, node):
+        """
+        Value Expression for Lacework Query Language (LQL)
+
+        If value is a field name
+        1.  Do not wrap in valueExpression
+        2.  Transfrom using fieldNameMapping()
+        """
+        node = self.cleanValue(str(node))
+
+        if node in self.laceworkSigmaFields:
+            return self.fieldNameMapping(node, None)
+        return self.valueExpression % node
+
     def generateMapItemNode(self, node):
+        """
+        Map Expression for Lacework Query Language (LQL)
+
+        Special handling for contains by inspecting value for wildcards
+        """
         fieldname, value = node
 
         transformed_fieldname = self.fieldNameMapping(fieldname, value)
@@ -145,23 +203,22 @@ class LaceworkBackend(SingleTextQueryBackend):
             and value.startswith('*')
             and value.endswith('*')
         ):
-            value = value[1:-1]
-            return f"contains({transformed_fieldname}, '{value}')"
+            value = self.generateValueNode(value[1:-1])
+            return f"contains({transformed_fieldname}, {value})"
         # startswith
         if (
             isinstance(value, str)
             and value.startswith('*')
         ):
-            value = value[1]
-            return f"{transformed_fieldname} <> '{value}'"
+            value = self.generateValueNode(value[1])
+            return f"{transformed_fieldname} <> {value}"
         # endswith
         if (
             isinstance(value, str)
             and value.endswith('*')
         ):
-            value = value[-1]
-            return f"{transformed_fieldname} <> '{value}'"
-
+            value = self.generateValueNode(value[-1])
+            return f"{transformed_fieldname} <> {value}"
         if (
             self.mapListsSpecialHandling is False and isinstance(value, (str, int, list))
             or self.mapListsSpecialHandling is True and isinstance(value, (str, int))
@@ -177,9 +234,10 @@ class LaceworkBackend(SingleTextQueryBackend):
 
     def fieldNameMapping(self, fieldname, value):
         """
-        Alter field names depending on the value(s). Backends may use this method to perform a final transformation of the field name
-        in addition to the field mapping defined in the conversion configuration. The field name passed to this method was already
-        transformed from the original name given in the Sigma rule.
+        Field Name Mapping for Lacework Query Language (LQL)
+
+        The Lacework backend is not using a traditional config.
+        As such we map field names here using our custom backend config.
         """
         if not (isinstance(fieldname, str) and fieldname):
             return fieldname
@@ -236,9 +294,18 @@ class LaceworkBackend(SingleTextQueryBackend):
 
 
 class LaceworkQuery:
-    def __init__(self, config, sigmaparser, backend=None):
+    def __init__(
+        self,
+        config,
+        sigmaparser,
+        backend,
+        output_format='yaml'
+    ):
         rule = sigmaparser.parsedyaml
         conditions = sigmaparser.condparsed
+
+        # 0. Get Output Format
+        self.output_format = str(output_format).lower()
 
         # 1. Get Service
         self.service_name = self.get_service(rule)
@@ -319,12 +386,29 @@ class LaceworkQuery:
             yield (key, getattr(self, attr))
 
     def __str__(self):
+        o = dict(self)
+
+        if self.output_format == 'json':
+            return json.dumps(o, indent=4)
+
         return yaml.dump(
-            dict(self),
+            o,
             explicit_start=True,
             default_flow_style=False,
             sort_keys=False
         )
+
+    @staticmethod
+    def get_fields(sigmaparser):
+        return safe_get(sigmaparser.parsedyaml, 'fields', list)
+
+    @staticmethod
+    def get_field_map(config, sigmaparser):
+        config = safe_get(config, 'services', dict)
+        service = LaceworkQuery.get_service(sigmaparser.parsedyaml)
+        service_config = safe_get(config, service, dict)
+
+        return safe_get(service_config, 'fieldMap', list)
 
     @staticmethod
     def should_generate_query(backend_options):
@@ -401,14 +485,6 @@ class LaceworkQuery:
         return returns
 
     @staticmethod
-    def get_field_map(config, sigmaparser):
-        config = safe_get(config, 'services', dict)
-        service = LaceworkQuery.get_service(sigmaparser.parsedyaml)
-        service_config = safe_get(config, service, dict)
-
-        return safe_get(service_config, 'fieldMap', list)
-
-    @staticmethod
     def get_query_filter_block(backend, conditions):
         filter_block_template = (
             'filter {{\n'
@@ -433,8 +509,16 @@ class LaceworkQuery:
 
 
 class LaceworkPolicy:
-    def __init__(self, config, sigmaparser):
+    def __init__(
+        self,
+        config,
+        sigmaparser,
+        output_format='yaml'
+    ):
         rule = sigmaparser.parsedyaml
+
+        # 0. Get Output Format
+        self.output_format = str(output_format).lower()
 
         # 1. Get Service Name
         self.service_name = LaceworkQuery.get_service(rule)
@@ -497,8 +581,13 @@ class LaceworkPolicy:
             yield (key, getattr(self, attr))
 
     def __str__(self):
+        o = dict(self)
+
+        if self.output_format == 'json':
+            return json.dumps(o, indent=4)
+
         return yaml.dump(
-            dict(self),
+            o,
             explicit_start=True,
             default_flow_style=False,
             sort_keys=False
