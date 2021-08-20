@@ -208,17 +208,20 @@ class LaceworkBackend(SingleTextQueryBackend):
         # startswith
         if (
             isinstance(value, str)
-            and value.startswith('*')
+            and value.endswith('*')  # a wildcard at the end signifies startswith
         ):
-            value = self.generateValueNode(value[1])
-            return f"{transformed_fieldname} <> {value}"
+            value = self.generateValueNode(value[:-1])
+            return f"starts_with({transformed_fieldname}, {value})"
         # endswith
         if (
             isinstance(value, str)
-            and value.endswith('*')
+            and value.startswith('*')  # a wilcard at the start signifies endswith
         ):
-            value = self.generateValueNode(value[-1])
-            return f"{transformed_fieldname} <> {value}"
+            new_value = self.generateValueNode(value[1:])
+            if new_value != (self.valueExpression % value[1:]):
+                raise BackendError(
+                    'Lacework backend only supports endswith for literal string values')
+            return f"{transformed_fieldname} <> {new_value}"
         if (
             self.mapListsSpecialHandling is False and isinstance(value, (str, int, list))
             or self.mapListsSpecialHandling is True and isinstance(value, (str, int))
