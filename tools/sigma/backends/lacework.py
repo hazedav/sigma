@@ -215,7 +215,7 @@ class LaceworkBackend(SingleTextQueryBackend):
         # endswith
         if (
             isinstance(value, str)
-            and value.startswith('*')  # a wilcard at the start signifies endswith
+            and value.startswith('*')  # a wildcard at the start signifies endswith
         ):
             new_value = self.generateValueNode(value[1:])
             if new_value != (self.valueExpression % value[1:]):
