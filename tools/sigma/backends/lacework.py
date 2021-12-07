@@ -83,7 +83,7 @@ LACEWORK_CONFIG = yaml.load(
           - OWNER_UID
           - OWNER_USERNAME
           - FILE_CREATED_TIME
-        alertProfile: LW_HE_Files.HE_File_NewViolation
+        alertProfile: LW_HE_FILES_DEFAULT_PROFILE.HE_File_NewViolation
         evalFrequency: Hourly
       linux.process_creation:
         evaluatorId:
@@ -126,7 +126,7 @@ LACEWORK_CONFIG = yaml.load(
           - ROOT
           - USERNAME
           - PROCESS_START_TIME
-        alertProfile: LW_HE_Files.HE_Process_NewViolation
+        alertProfile: LW_HE_PROCESSES_DEFAULT_PROFILE.HE_Process_NewViolation
         evalFrequency: Hourly
     '''),
     Loader=yaml.SafeLoader
